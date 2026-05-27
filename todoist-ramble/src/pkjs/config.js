@@ -1,11 +1,11 @@
 module.exports = [
   {
     "type": "heading",
-    "defaultValue": "Ramble List"
+    "defaultValue": "Todoist Ramble"
   },
   {
     "type": "text",
-    "defaultValue": "Speak your tasks — Ramble List adds them to Todoist."
+    "defaultValue": "Speak your tasks — Todoist Ramble adds them to Todoist."
   },
   {
     "type": "section",

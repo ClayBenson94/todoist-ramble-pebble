@@ -15,7 +15,6 @@ function loadSettings() {
   var projectId = localStorage.getItem(STORAGE_KEY_PROJECT) || '';
   settings.apiKey = apiKey;
   settings.projectId = projectId;
-  console.log('[DEBUG_LOG] loadSettings: localStorage apiKey=' + (apiKey ? '"' + apiKey.substring(0, 4) + '..."' : 'EMPTY') + ' projectId=' + (projectId || 'EMPTY')); // DEBUG_LOG
   console.log('Settings loaded. API key set: ' + (settings.apiKey ? 'yes' : 'no') +
               ', project ID: ' + (settings.projectId || 'inbox'));
 }
@@ -25,7 +24,6 @@ function saveSettings(apiKey, projectId) {
   settings.projectId = projectId;
   localStorage.setItem(STORAGE_KEY_API, apiKey);
   localStorage.setItem(STORAGE_KEY_PROJECT, projectId);
-  console.log('[DEBUG_LOG] saveSettings: stored apiKey=' + (apiKey ? '"' + apiKey.substring(0, 4) + '..."' : 'EMPTY') + ' projectId=' + (projectId || 'EMPTY')); // DEBUG_LOG
 }
 
 function splitIntoTasks(text) {
@@ -58,18 +56,12 @@ function createTask(content, callback) {
   var body = { content: content };
   if (settings.projectId) {
     body.project_id = settings.projectId;
-    console.log('[DEBUG_LOG] createTask: using projectId ' + settings.projectId); // DEBUG_LOG
-  } else {
-    console.log('[DEBUG_LOG] createTask: no projectId, using Inbox'); // DEBUG_LOG
   }
-  console.log('[DEBUG_LOG] createTask: apiKey present=' + (settings.apiKey ? 'yes, starts with "' + settings.apiKey.substring(0, 4) + '"' : 'NO - EMPTY')); // DEBUG_LOG
 
   xhr.onload = function() {
-    console.log('[DEBUG_LOG] createTask: response status=' + this.status + ' body=' + this.responseText.substring(0, 200)); // DEBUG_LOG
     callback(this.status, this.responseText);
   };
   xhr.onerror = function() {
-    console.log('[DEBUG_LOG] createTask: xhr.onerror fired'); // DEBUG_LOG
     callback(0, 'Network error');
   };
 
@@ -108,35 +100,27 @@ function sendToWatch(payload, label) {
 }
 
 Pebble.addEventListener('showConfiguration', function() {
-  console.log('[DEBUG_LOG] showConfiguration fired, opening Clay URL'); // DEBUG_LOG
   Pebble.openURL(clay.generateUrl());
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
-  console.log('[DEBUG_LOG] webviewclosed fired, e.response=' + (e && e.response ? 'present (length=' + e.response.length + ')' : 'missing/empty')); // DEBUG_LOG
   if (!e || !e.response) {
-    console.log('[DEBUG_LOG] webviewclosed: no response — user cancelled'); // DEBUG_LOG
     return;
   }
   try {
     // Pass false to get string-named keys with {value: ...} wrappers
     var claySettings = clay.getSettings(e.response, false);
-    console.log('[DEBUG_LOG] webviewclosed: parsed claySettings keys=' + Object.keys(claySettings).join(',')); // DEBUG_LOG
-    console.log('[DEBUG_LOG] webviewclosed: TodoistApiKey entry=' + JSON.stringify(claySettings.TodoistApiKey)); // DEBUG_LOG
-    console.log('[DEBUG_LOG] webviewclosed: TodoistProjectId entry=' + JSON.stringify(claySettings.TodoistProjectId)); // DEBUG_LOG
     var apiKey = (claySettings.TodoistApiKey && claySettings.TodoistApiKey.value) ? String(claySettings.TodoistApiKey.value) : '';
     var projectId = (claySettings.TodoistProjectId && claySettings.TodoistProjectId.value) ? String(claySettings.TodoistProjectId.value) : '';
     saveSettings(apiKey, projectId);
   } catch (err) {
-    console.log('[DEBUG_LOG] webviewclosed: error parsing settings: ' + err.message + ' stack=' + err.stack); // DEBUG_LOG
+    console.log('Error parsing settings: ' + err.message);
   }
 });
 
 Pebble.addEventListener('ready', function() {
-  console.log('[DEBUG_LOG] Pebble ready event fired'); // DEBUG_LOG
   loadSettings();
-  console.log('[DEBUG_LOG] After loadSettings: apiKey=' + (settings.apiKey ? 'set' : 'EMPTY') + ' projectId=' + (settings.projectId || 'EMPTY')); // DEBUG_LOG
-  console.log('Ramble List JS ready');
+  console.log('Todoist Ramble JS ready');
 });
 
 Pebble.addEventListener('appmessage', function(e) {
@@ -146,7 +130,6 @@ Pebble.addEventListener('appmessage', function(e) {
   if (payload['DICTATION_TEXT'] !== undefined) {
     var text = payload['DICTATION_TEXT'];
     console.log('Received dictation text: ' + text);
-    console.log('[DEBUG_LOG] appmessage: settings.apiKey=' + (settings.apiKey ? '"' + settings.apiKey.substring(0, 4) + '..."' : 'EMPTY') + ' projectId=' + (settings.projectId || 'EMPTY')); // DEBUG_LOG
 
     if (!settings.apiKey) {
       sendToWatch({'RESULT_ERROR': 'No API key set'}, 'no api key error');

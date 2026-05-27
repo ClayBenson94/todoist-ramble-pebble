@@ -1,5 +1,5 @@
 {
-  "name": "ramble-list",
+  "name": "todoist-ramble",
   "author": "Clay Benson",
   "version": "1.0.0",
   "keywords": ["pebble-app"],
@@ -8,7 +8,7 @@
     "@rebble/clay": "^1.0.8"
   },
   "pebble": {
-    "displayName": "Ramble List",
+    "displayName": "Todoist Ramble",
     "uuid": "5446ab6c-298a-4438-91cf-42620a2abf3f",
     "sdkVersion": "3",
     "enableMultiJS": true,
