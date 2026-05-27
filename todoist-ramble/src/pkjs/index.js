@@ -4,26 +4,35 @@ var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
 var settings = {
   apiKey: '',
-  projectId: ''
+  projectId: '',
+  skipPreview: false
 };
 
 var STORAGE_KEY_API = 'ramble_apiKey';
 var STORAGE_KEY_PROJECT = 'ramble_projectId';
+var STORAGE_KEY_SKIP_PREVIEW = 'ramble_skipPreview';
+
+var s_pending_tasks = null;
 
 function loadSettings() {
   var apiKey = localStorage.getItem(STORAGE_KEY_API) || '';
   var projectId = localStorage.getItem(STORAGE_KEY_PROJECT) || '';
+  var skipPreview = localStorage.getItem(STORAGE_KEY_SKIP_PREVIEW);
   settings.apiKey = apiKey;
   settings.projectId = projectId;
+  settings.skipPreview = (skipPreview === 'true');
   console.log('Settings loaded. API key set: ' + (settings.apiKey ? 'yes' : 'no') +
-              ', project ID: ' + (settings.projectId || 'inbox'));
+              ', project ID: ' + (settings.projectId || 'inbox') +
+              ', skipPreview: ' + settings.skipPreview);
 }
 
-function saveSettings(apiKey, projectId) {
+function saveSettings(apiKey, projectId, skipPreview) {
   settings.apiKey = apiKey;
   settings.projectId = projectId;
+  settings.skipPreview = !!skipPreview;
   localStorage.setItem(STORAGE_KEY_API, apiKey);
   localStorage.setItem(STORAGE_KEY_PROJECT, projectId);
+  localStorage.setItem(STORAGE_KEY_SKIP_PREVIEW, settings.skipPreview ? 'true' : 'false');
 }
 
 function splitIntoTasks(text) {
@@ -113,12 +122,14 @@ Pebble.addEventListener('webviewclosed', function(e) {
     var apiKey = (claySettings.TodoistApiKey && claySettings.TodoistApiKey.value) ? String(claySettings.TodoistApiKey.value) : '';
     var projectId = (claySettings.TodoistProjectId && claySettings.TodoistProjectId.value) ? String(claySettings.TodoistProjectId.value) : '';
     var autoLaunch = (claySettings.AutoLaunch && claySettings.AutoLaunch.value) ? 1 : 0;
-    saveSettings(apiKey, projectId);
+    var skipPreview = !!(claySettings.SkipPreview && claySettings.SkipPreview.value);
+    saveSettings(apiKey, projectId, skipPreview);
     // autoHandleEvents:false means Clay never sends to the watch — do it manually
     Pebble.sendAppMessage({
       'TodoistApiKey': apiKey,
       'TodoistProjectId': projectId,
-      'AutoLaunch': autoLaunch
+      'AutoLaunch': autoLaunch,
+      'SkipPreview': skipPreview ? 1 : 0
     });
   } catch (err) {
     console.log('Error parsing settings: ' + err.message);
@@ -151,11 +162,35 @@ Pebble.addEventListener('appmessage', function(e) {
       return;
     }
 
+    if (settings.skipPreview) {
+      // Skip preview — add tasks immediately
+      createTasksSequentially(tasks, 0, 0, function(count, err) {
+        if (err && count === 0) {
+          sendToWatch({'RESULT_ERROR': err}, 'todoist error');
+        } else {
+          sendToWatch({'RESULT_SUCCESS': count}, 'success: ' + count + ' tasks');
+        }
+      });
+    } else {
+      // Send task list to watch for preview/confirmation
+      s_pending_tasks = tasks;
+      sendToWatch({'TASK_PREVIEW': tasks.join('|')}, 'task preview');
+    }
+  }
+
+  // User confirmed tasks on watch — now call the API
+  if (payload['CONFIRM_TASKS'] !== undefined) {
+    console.log('User confirmed tasks on watch');
+    var tasks = s_pending_tasks;
+    s_pending_tasks = null;
+    if (!tasks || tasks.length === 0) {
+      sendToWatch({'RESULT_ERROR': 'No pending tasks'}, 'confirm with no tasks');
+      return;
+    }
     createTasksSequentially(tasks, 0, 0, function(count, err) {
       if (err && count === 0) {
         sendToWatch({'RESULT_ERROR': err}, 'todoist error');
       } else {
-        // Report success even if some failed — count is how many succeeded
         sendToWatch({'RESULT_SUCCESS': count}, 'success: ' + count + ' tasks');
       }
     });

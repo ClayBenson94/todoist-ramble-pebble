@@ -6,6 +6,7 @@ typedef enum {
   STATE_IDLE = 0,
   STATE_RECORDING,
   STATE_PROCESSING,
+  STATE_PREVIEW,
   STATE_SUCCESS,
   STATE_ERROR,
   STATE_NO_CONFIG
@@ -13,9 +14,10 @@ typedef enum {
 
 // ---- Persistent storage keys ----
 
-#define STORAGE_KEY_API_KEY    1
-#define STORAGE_KEY_PROJECT_ID 2
-#define STORAGE_KEY_AUTO_LAUNCH 3
+#define STORAGE_KEY_API_KEY      1
+#define STORAGE_KEY_PROJECT_ID   2
+#define STORAGE_KEY_AUTO_LAUNCH  3
+#define STORAGE_KEY_SKIP_PREVIEW 4
 
 // ---- Globals ----
 
@@ -37,12 +39,24 @@ static char s_hint_text[64];
 static char s_api_key[64];
 static char s_project_id[32];
 static bool s_auto_launch = false;
+static bool s_skip_preview = false;
+
+// ---- Preview window globals ----
+
+static Window     *s_preview_window = NULL;
+static ScrollLayer *s_preview_scroll_layer = NULL;
+static TextLayer  *s_preview_text_layer = NULL;
+static TextLayer  *s_preview_title_layer = NULL;
+static TextLayer  *s_preview_hint_layer = NULL;
+static char        s_preview_text[1024];
+static bool        s_preview_confirmed = false;
 
 // ---- Forward declarations ----
 
 static void set_state(AppState state);
 static void cancel_state_timer(void);
 static void cancel_ellipsis_timer(void);
+static void preview_window_push(void);
 
 // ---- Divider drawing ----
 
@@ -163,6 +177,9 @@ static void set_state(AppState state) {
       s_ellipsis_count = 0;
       s_ellipsis_timer = app_timer_register(600, ellipsis_tick_callback, NULL);
       break;
+    case STATE_PREVIEW:
+      // Preview window is pushed on top; main window content is hidden
+      break;
     case STATE_SUCCESS:
       // Caller provides count; hint already set; just start auto-return timer
       start_state_timer(4000);
@@ -217,6 +234,23 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   if (auto_launch_t) {
     s_auto_launch = auto_launch_t->value->uint8 != 0;
     persist_write_bool(STORAGE_KEY_AUTO_LAUNCH, s_auto_launch);
+  }
+
+  Tuple *skip_preview_t = dict_find(iterator, MESSAGE_KEY_SkipPreview);
+  if (skip_preview_t) {
+    s_skip_preview = skip_preview_t->value->uint8 != 0;
+    persist_write_bool(STORAGE_KEY_SKIP_PREVIEW, s_skip_preview);
+  }
+
+  // Task preview from phone — show confirmation window
+  Tuple *preview_t = dict_find(iterator, MESSAGE_KEY_TASK_PREVIEW);
+  if (preview_t) {
+    cancel_ellipsis_timer();
+    snprintf(s_preview_text, sizeof(s_preview_text), "%s", preview_t->value->cstring);
+    APP_LOG(APP_LOG_LEVEL_INFO, "Task preview received: %s", s_preview_text);
+    s_preview_confirmed = false;
+    preview_window_push();
+    s_current_state = STATE_PREVIEW;
   }
 
   // Task creation result
@@ -292,6 +326,137 @@ static void dictation_result_handler(DictationSession *session,
       set_state(STATE_IDLE);
       break;
   }
+}
+
+// ---- Confirm tasks ----
+
+static void send_confirm_tasks(void) {
+  DictionaryIterator *iter;
+  AppMessageResult result = app_message_outbox_begin(&iter);
+  if (result != APP_MSG_OK) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox begin failed for confirm: %d", (int)result);
+    return;
+  }
+  dict_write_uint8(iter, MESSAGE_KEY_CONFIRM_TASKS, 1);
+  app_message_outbox_send();
+  APP_LOG(APP_LOG_LEVEL_INFO, "CONFIRM_TASKS sent");
+}
+
+// ---- Preview window ----
+
+static void preview_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  s_preview_confirmed = true;
+  window_stack_pop(true);
+}
+
+static void preview_click_config_provider(void *context) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, preview_select_click_handler);
+}
+
+static void preview_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  int margin = PBL_IF_ROUND_ELSE(20, 4);
+  int hint_h = PBL_IF_ROUND_ELSE(40, 36);
+
+  // Build numbered task list from pipe-delimited s_preview_text
+  static char display_buf[1100];
+  static char temp[1024];
+  display_buf[0] = '\0';
+  snprintf(temp, sizeof(temp), "%s", s_preview_text);
+
+  int task_num = 1;
+  char *p = temp;
+  while (*p != '\0') {
+    char *end = p;
+    while (*end != '|' && *end != '\0') end++;
+    char saved = *end;
+    *end = '\0';
+    char line[128];
+    snprintf(line, sizeof(line), "%d. %s\n", task_num++, p);
+    strncat(display_buf, line, sizeof(display_buf) - strlen(display_buf) - 1);
+    *end = saved;
+    if (saved == '\0') break;
+    p = end + 1;
+  }
+  int content_h = (task_num - 1) * 40 + 16;
+
+  // Title bar
+  s_preview_title_layer = text_layer_create(GRect(0, 0, bounds.size.w, 28));
+  text_layer_set_background_color(s_preview_title_layer, GColorCobaltBlue);
+  text_layer_set_text_color(s_preview_title_layer, GColorWhite);
+  text_layer_set_font(s_preview_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_preview_title_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_preview_title_layer, "Confirm Tasks?");
+  layer_add_child(root, text_layer_get_layer(s_preview_title_layer));
+
+  // Hint bar
+  int hint_y = bounds.size.h - hint_h;
+  s_preview_hint_layer = text_layer_create(
+      GRect(margin, hint_y, bounds.size.w - margin * 2, hint_h));
+  text_layer_set_background_color(s_preview_hint_layer, GColorClear);
+  text_layer_set_text_color(s_preview_hint_layer, GColorDarkGray);
+  text_layer_set_font(s_preview_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_preview_hint_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_preview_hint_layer, "Select: Add  Back: Cancel");
+  layer_add_child(root, text_layer_get_layer(s_preview_hint_layer));
+
+  // Scroll layer fills the middle zone
+  GRect scroll_frame = GRect(0, 28, bounds.size.w, bounds.size.h - 28 - hint_h);
+  s_preview_scroll_layer = scroll_layer_create(scroll_frame);
+
+  // Text layer inside scroll
+  s_preview_text_layer = text_layer_create(
+      GRect(margin, 4, scroll_frame.size.w - margin * 2, content_h));
+  text_layer_set_background_color(s_preview_text_layer, GColorClear);
+  text_layer_set_text_color(s_preview_text_layer, GColorBlack);
+  text_layer_set_font(s_preview_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_text_alignment(s_preview_text_layer, GTextAlignmentLeft);
+  text_layer_set_overflow_mode(s_preview_text_layer, GTextOverflowModeWordWrap);
+  text_layer_set_text(s_preview_text_layer, display_buf);
+
+  scroll_layer_set_content_size(s_preview_scroll_layer,
+      GSize(scroll_frame.size.w, content_h + 8));
+  scroll_layer_add_child(s_preview_scroll_layer,
+      text_layer_get_layer(s_preview_text_layer));
+  layer_add_child(root, scroll_layer_get_layer(s_preview_scroll_layer));
+
+  // Give Up/Down to scroll layer; Select is wired in via scroll layer callbacks
+  scroll_layer_set_callbacks(s_preview_scroll_layer, (ScrollLayerCallbacks){
+    .click_config_provider = preview_click_config_provider
+  });
+  scroll_layer_set_click_config_onto_window(s_preview_scroll_layer, window);
+}
+
+static void preview_window_unload(Window *window) {
+  text_layer_destroy(s_preview_text_layer);
+  s_preview_text_layer = NULL;
+  scroll_layer_destroy(s_preview_scroll_layer);
+  s_preview_scroll_layer = NULL;
+  text_layer_destroy(s_preview_hint_layer);
+  s_preview_hint_layer = NULL;
+  text_layer_destroy(s_preview_title_layer);
+  s_preview_title_layer = NULL;
+
+  window_destroy(s_preview_window);
+  s_preview_window = NULL;
+
+  if (s_preview_confirmed) {
+    set_state(STATE_PROCESSING);
+    send_confirm_tasks();
+  } else {
+    set_state(STATE_IDLE);
+  }
+}
+
+static void preview_window_push(void) {
+  if (s_preview_window != NULL) return;
+  s_preview_window = window_create();
+  window_set_window_handlers(s_preview_window, (WindowHandlers) {
+    .load   = preview_window_load,
+    .unload = preview_window_unload
+  });
+  window_stack_push(s_preview_window, true);
 }
 
 // ---- Button handlers ----
@@ -409,6 +574,9 @@ static void init(void) {
   if (persist_exists(STORAGE_KEY_AUTO_LAUNCH)) {
     s_auto_launch = persist_read_bool(STORAGE_KEY_AUTO_LAUNCH);
   }
+  if (persist_exists(STORAGE_KEY_SKIP_PREVIEW)) {
+    s_skip_preview = persist_read_bool(STORAGE_KEY_SKIP_PREVIEW);
+  }
 
   // Create dictation session — 512 byte buffer for transcription
   s_dictation_session = dictation_session_create(512, dictation_result_handler, NULL);
@@ -417,7 +585,7 @@ static void init(void) {
   app_message_register_inbox_received(inbox_received_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
   app_message_register_outbox_sent(outbox_sent_callback);
-  app_message_open(256, 576);
+  app_message_open(1024, 576);
 
   // Window
   s_main_window = window_create();

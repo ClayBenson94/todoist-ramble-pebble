@@ -47,6 +47,13 @@ module.exports = [
         "label": "Quick Launch",
         "description": "Skip the start screen and begin dictation immediately when the app opens.",
         "defaultValue": false
+      },
+      {
+        "type": "toggle",
+        "messageKey": "SkipPreview",
+        "label": "Skip task preview",
+        "description": "When enabled, tasks are added immediately after dictation without a preview step.",
+        "defaultValue": false
       }
     ]
   },
