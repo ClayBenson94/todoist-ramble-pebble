@@ -112,7 +112,14 @@ Pebble.addEventListener('webviewclosed', function(e) {
     var claySettings = clay.getSettings(e.response, false);
     var apiKey = (claySettings.TodoistApiKey && claySettings.TodoistApiKey.value) ? String(claySettings.TodoistApiKey.value) : '';
     var projectId = (claySettings.TodoistProjectId && claySettings.TodoistProjectId.value) ? String(claySettings.TodoistProjectId.value) : '';
+    var autoLaunch = (claySettings.AutoLaunch && claySettings.AutoLaunch.value) ? 1 : 0;
     saveSettings(apiKey, projectId);
+    // autoHandleEvents:false means Clay never sends to the watch — do it manually
+    Pebble.sendAppMessage({
+      'TodoistApiKey': apiKey,
+      'TodoistProjectId': projectId,
+      'AutoLaunch': autoLaunch
+    });
   } catch (err) {
     console.log('Error parsing settings: ' + err.message);
   }

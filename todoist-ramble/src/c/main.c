@@ -15,6 +15,7 @@ typedef enum {
 
 #define STORAGE_KEY_API_KEY    1
 #define STORAGE_KEY_PROJECT_ID 2
+#define STORAGE_KEY_AUTO_LAUNCH 3
 
 // ---- Globals ----
 
@@ -35,6 +36,7 @@ static char s_main_text[256];
 static char s_hint_text[64];
 static char s_api_key[64];
 static char s_project_id[32];
+static bool s_auto_launch = false;
 
 // ---- Forward declarations ----
 
@@ -137,6 +139,14 @@ static void cancel_ellipsis_timer(void) {
   }
 }
 
+static void auto_launch_callback(void *context) {
+  APP_LOG(APP_LOG_LEVEL_INFO, "DBG auto_launch_callback fired, state=%d", (int)s_current_state);
+  if (s_current_state == STATE_RECORDING) {
+    DictationSessionStatus status = dictation_session_start(s_dictation_session);
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG dictation_session_start returned %d", (int)status);
+  }
+}
+
 // ---- State machine ----
 
 static void set_state(AppState state) {
@@ -203,6 +213,17 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     snprintf(s_project_id, sizeof(s_project_id), "%s", project_id_t->value->cstring);
     persist_write_string(STORAGE_KEY_PROJECT_ID, s_project_id);
     APP_LOG(APP_LOG_LEVEL_INFO, "Project ID saved: %s", s_project_id);
+  }
+
+  Tuple *auto_launch_t = dict_find(iterator, MESSAGE_KEY_AutoLaunch);
+  if (auto_launch_t) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG AutoLaunch tuple type=%d uint8=%d int32=%d",
+            (int)auto_launch_t->type, (int)auto_launch_t->value->uint8, (int)auto_launch_t->value->int32);
+    s_auto_launch = auto_launch_t->value->uint8 != 0;
+    persist_write_bool(STORAGE_KEY_AUTO_LAUNCH, s_auto_launch);
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG auto_launch saved as %d", (int)s_auto_launch);
+  } else {
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG AutoLaunch key not present in message");
   }
 
   // Task creation result
@@ -296,7 +317,12 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     case STATE_SUCCESS:
     case STATE_ERROR:
       cancel_state_timer();
-      set_state(STATE_IDLE);
+      if (s_auto_launch && s_api_key[0] != '\0') {
+        set_state(STATE_RECORDING);
+        app_timer_register(100, auto_launch_callback, NULL);
+      } else {
+        set_state(STATE_IDLE);
+      }
       break;
 
     case STATE_NO_CONFIG:
@@ -357,8 +383,16 @@ static void window_load(Window *window) {
   text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
   layer_add_child(window_layer, text_layer_get_layer(s_hint_layer));
 
-  // Set initial state
-  set_state(STATE_IDLE);
+  // Set initial state — skip idle if quick launch is enabled
+  APP_LOG(APP_LOG_LEVEL_INFO, "DBG window_load: auto_launch=%d api_key_set=%d", (int)s_auto_launch, s_api_key[0] != '\0');
+  if (s_auto_launch && s_api_key[0] != '\0') {
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG window_load: scheduling auto-launch timer");
+    set_state(STATE_RECORDING);
+    app_timer_register(100, auto_launch_callback, NULL);
+  } else {
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG window_load: going to STATE_IDLE");
+    set_state(STATE_IDLE);
+  }
 }
 
 static void window_unload(Window *window) {
@@ -382,7 +416,13 @@ static void init(void) {
   if (persist_exists(STORAGE_KEY_PROJECT_ID)) {
     persist_read_string(STORAGE_KEY_PROJECT_ID, s_project_id, sizeof(s_project_id));
   }
-  APP_LOG(APP_LOG_LEVEL_INFO, "API key loaded: %s", s_api_key[0] ? "yes" : "no");
+  if (persist_exists(STORAGE_KEY_AUTO_LAUNCH)) {
+    s_auto_launch = persist_read_bool(STORAGE_KEY_AUTO_LAUNCH);
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG persist auto_launch exists, value=%d", (int)s_auto_launch);
+  } else {
+    APP_LOG(APP_LOG_LEVEL_INFO, "DBG persist auto_launch key does NOT exist");
+  }
+  APP_LOG(APP_LOG_LEVEL_INFO, "DBG api_key present=%d auto_launch=%d", s_api_key[0] != '\0', (int)s_auto_launch);
 
   // Create dictation session — 512 byte buffer for transcription
   s_dictation_session = dictation_session_create(512, dictation_result_handler, NULL);

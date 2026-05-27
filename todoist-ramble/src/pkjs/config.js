@@ -39,6 +39,18 @@ module.exports = [
     ]
   },
   {
+    "type": "section",
+    "items": [
+      {
+        "type": "toggle",
+        "messageKey": "AutoLaunch",
+        "label": "Quick Launch",
+        "description": "Skip the start screen and begin dictation immediately when the app opens.",
+        "defaultValue": false
+      }
+    ]
+  },
+  {
     "type": "submit",
     "defaultValue": "Save Settings"
   }

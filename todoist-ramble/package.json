@@ -22,7 +22,8 @@
       "RESULT_SUCCESS",
       "RESULT_ERROR",
       "TodoistApiKey",
-      "TodoistProjectId"
+      "TodoistProjectId",
+      "AutoLaunch"
     ],
     "resources": {
       "media": []
