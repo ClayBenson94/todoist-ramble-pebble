@@ -40,7 +40,7 @@ function splitIntoTasks(text) {
   var tasks = [];
 
   for (var i = 0; i < parts.length; i++) {
-    var task = parts[i].trim();
+    var task = parts[i].trim().replace(/^(and|also|then|next|but|or|so)\s+/i, '');
     if (!task) continue;
     if (task.length < 3) continue;
     if (stopWords.indexOf(task.toLowerCase()) !== -1) continue;
