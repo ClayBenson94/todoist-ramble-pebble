@@ -1,3 +1,7 @@
+// Clay configuration schema for the Pebble settings page.
+// Each item describes a UI element (heading, text, input, toggle, submit) that Clay renders
+// in the Pebble mobile app. The messageKey fields map directly to AppMessage keys used in
+// inbox_received_callback on the watch and in the 'webviewclosed' handler in index.js.
 module.exports = [
   {
     "type": "heading",

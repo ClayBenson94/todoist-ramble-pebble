@@ -12,8 +12,14 @@ var STORAGE_KEY_API = 'ramble_apiKey';
 var STORAGE_KEY_PROJECT = 'ramble_projectId';
 var STORAGE_KEY_SKIP_PREVIEW = 'ramble_skipPreview';
 
+// Pending task array held between DICTATION_TEXT and CONFIRM_TASKS messages.
+// Set when the phone sends a task preview to the watch; cleared after the user confirms or cancels.
 var s_pending_tasks = null;
 
+/**
+ * Loads saved settings from localStorage into the in-memory settings object.
+ * Called once on the 'ready' event before any messages can arrive.
+ */
 function loadSettings() {
   var apiKey = localStorage.getItem(STORAGE_KEY_API) || '';
   var projectId = localStorage.getItem(STORAGE_KEY_PROJECT) || '';
@@ -26,6 +32,12 @@ function loadSettings() {
               ', skipPreview: ' + settings.skipPreview);
 }
 
+/**
+ * Persists new settings to localStorage and updates the in-memory settings object.
+ * @param {string}  apiKey      - Todoist API token
+ * @param {string}  projectId   - Todoist project ID, or empty string for Inbox
+ * @param {boolean} skipPreview - Whether to skip the on-watch task preview step
+ */
 function saveSettings(apiKey, projectId, skipPreview) {
   settings.apiKey = apiKey;
   settings.projectId = projectId;
@@ -35,6 +47,14 @@ function saveSettings(apiKey, projectId, skipPreview) {
   localStorage.setItem(STORAGE_KEY_SKIP_PREVIEW, settings.skipPreview ? 'true' : 'false');
 }
 
+/**
+ * Splits a dictated sentence into individual task strings.
+ * Splits on spoken delimiters (and/also/then/next, commas, periods, numbered lists),
+ * strips leading stop-words from each part, discards fragments shorter than 3 characters,
+ * and capitalizes each resulting task.
+ * @param  {string}   text - raw transcription string received from the watch
+ * @returns {string[]}      array of cleaned, capitalized task strings (may be empty)
+ */
 function splitIntoTasks(text) {
   if (!text || typeof text !== 'string') return [];
 
@@ -60,6 +80,12 @@ function splitIntoTasks(text) {
   return tasks;
 }
 
+/**
+ * Creates a single task in Todoist via the REST API.
+ * Uses the configured API key; adds to the configured project if set, otherwise Inbox.
+ * @param {string}   content  - task title to create
+ * @param {Function} callback - called with (httpStatus, responseText) when the request settles
+ */
 function createTask(content, callback) {
   var xhr = new XMLHttpRequest();
   var body = { content: content };
@@ -80,6 +106,15 @@ function createTask(content, callback) {
   xhr.send(JSON.stringify(body));
 }
 
+/**
+ * Recursively creates tasks one at a time to avoid hitting API rate limits.
+ * Stops immediately on 401/403 auth errors rather than continuing with remaining tasks.
+ * On completion (all tasks attempted or early stop), calls callback with final counts.
+ * @param {string[]} tasks        - full list of task strings to create
+ * @param {number}   index        - current position in the tasks array (start at 0)
+ * @param {number}   successCount - running count of successfully created tasks
+ * @param {Function} callback     - called with (successCount, errorString|null) when done
+ */
 function createTasksSequentially(tasks, index, successCount, callback) {
   if (index >= tasks.length) {
     callback(successCount, null);
@@ -101,6 +136,11 @@ function createTasksSequentially(tasks, index, successCount, callback) {
   });
 }
 
+/**
+ * Sends an AppMessage payload to the watch with success/failure logging.
+ * @param {Object} payload - key/value pairs to deliver via Pebble.sendAppMessage
+ * @param {string} label   - human-readable label used only in console log output
+ */
 function sendToWatch(payload, label) {
   Pebble.sendAppMessage(payload,
     function() { console.log('Sent to watch: ' + label); },
@@ -108,10 +148,13 @@ function sendToWatch(payload, label) {
   );
 }
 
+// Opens the Clay configuration page in the Pebble mobile app when the user taps Settings.
 Pebble.addEventListener('showConfiguration', function() {
   Pebble.openURL(clay.generateUrl());
 });
 
+// Handles the Clay settings form being submitted (webview closed with a response).
+// Parses Clay's response, persists the updated settings, and pushes them to the watch.
 Pebble.addEventListener('webviewclosed', function(e) {
   if (!e || !e.response) {
     return;
@@ -136,11 +179,20 @@ Pebble.addEventListener('webviewclosed', function(e) {
   }
 });
 
+// Loads settings when the PebbleKit JS environment is ready to receive messages.
 Pebble.addEventListener('ready', function() {
   loadSettings();
   console.log('Todoist Ramble JS ready');
 });
 
+// Handles AppMessages arriving from the watch.
+//
+// DICTATION_TEXT: receives the raw transcription, parses it into tasks, then either
+//   sends a pipe-delimited TASK_PREVIEW to the watch (normal flow) or creates tasks
+//   immediately if skipPreview is enabled.
+//
+// CONFIRM_TASKS: receives user confirmation from the preview screen, then submits
+//   the pending task list (s_pending_tasks) to the Todoist API.
 Pebble.addEventListener('appmessage', function(e) {
   var payload = e.payload;
 
@@ -172,7 +224,7 @@ Pebble.addEventListener('appmessage', function(e) {
         }
       });
     } else {
-      // Send task list to watch for preview/confirmation
+      // Send task list to watch for preview/confirmation before creating
       s_pending_tasks = tasks;
       sendToWatch({'TASK_PREVIEW': tasks.join('|')}, 'task preview');
     }

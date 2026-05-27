@@ -60,6 +60,9 @@ static void preview_window_push(void);
 
 // ---- Divider drawing ----
 
+// Draws a 1px horizontal line at the top of the divider layer.
+// @param layer - the layer being drawn
+// @param ctx   - the graphics context to draw into
 static void divider_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_stroke_color(ctx, GColorLightGray);
@@ -68,11 +71,13 @@ static void divider_update_proc(Layer *layer, GContext *ctx) {
 
 // ---- State display helpers ----
 
+// Pushes the current s_main_text and s_hint_text values to their TextLayers.
 static void update_display(void) {
   text_layer_set_text(s_main_layer, s_main_text);
   text_layer_set_text(s_hint_layer, s_hint_text);
 }
 
+// Sets display text to idle state: prompts the user to press Select and speak tasks.
 static void show_idle(void) {
   snprintf(s_main_text, sizeof(s_main_text),
            "Press Select and speak your tasks.\n\nI'll add them to Todoist.");
@@ -80,18 +85,22 @@ static void show_idle(void) {
   update_display();
 }
 
+// Sets display text to recording state: indicates that the mic is active.
 static void show_recording(void) {
   snprintf(s_main_text, sizeof(s_main_text), "Listening...");
   snprintf(s_hint_text, sizeof(s_hint_text), "(Speak now)");
   update_display();
 }
 
+// Sets display text to processing state: tells the user to wait while tasks are sent.
 static void show_processing(void) {
   snprintf(s_main_text, sizeof(s_main_text), "Adding tasks.");
   snprintf(s_hint_text, sizeof(s_hint_text), "(Please wait)");
   update_display();
 }
 
+// Sets display text to success state with the number of tasks added.
+// @param count - number of tasks successfully created in Todoist
 static void show_success(int count) {
   if (count == 1) {
     snprintf(s_main_text, sizeof(s_main_text), "Added 1 task!");
@@ -102,12 +111,15 @@ static void show_success(int count) {
   update_display();
 }
 
+// Sets display text to error state with the provided message.
+// @param msg - error message to display; should be short enough for the watch screen
 static void show_error(const char *msg) {
   snprintf(s_main_text, sizeof(s_main_text), "%s", msg);
   snprintf(s_hint_text, sizeof(s_hint_text), "Select: Retry");
   update_display();
 }
 
+// Sets display text to no-config state: directs the user to the Pebble app to set an API key.
 static void show_no_config(void) {
   snprintf(s_main_text, sizeof(s_main_text),
            "No API key.\n\nOpen the Pebble app to configure.");
@@ -117,11 +129,14 @@ static void show_no_config(void) {
 
 // ---- Timer callbacks ----
 
+// AppTimer callback that transitions the app back to STATE_IDLE after a timed delay.
+// @param context - unused
 static void return_to_idle_callback(void *context) {
   s_state_timer = NULL;
   set_state(STATE_IDLE);
 }
 
+// Cancels the pending state-return timer if one is registered.
 static void cancel_state_timer(void) {
   if (s_state_timer) {
     app_timer_cancel(s_state_timer);
@@ -129,11 +144,18 @@ static void cancel_state_timer(void) {
   }
 }
 
+// Schedules a timer to automatically return to STATE_IDLE after the given delay.
+// Cancels any previously scheduled state timer before registering the new one.
+// @param ms - delay in milliseconds before transitioning to STATE_IDLE
 static void start_state_timer(int ms) {
   cancel_state_timer();
   s_state_timer = app_timer_register(ms, return_to_idle_callback, NULL);
 }
 
+// AppTimer callback that animates the processing ellipsis ("Adding tasks." → "..." → repeat).
+// Cycles through 0–3 dots every 600ms and re-schedules itself while in STATE_PROCESSING.
+// Stops silently if the state has changed before the callback fires.
+// @param context - unused
 static void ellipsis_tick_callback(void *context) {
   s_ellipsis_timer = NULL;
   if (s_current_state != STATE_PROCESSING) return;
@@ -146,6 +168,7 @@ static void ellipsis_tick_callback(void *context) {
   s_ellipsis_timer = app_timer_register(600, ellipsis_tick_callback, NULL);
 }
 
+// Cancels the pending ellipsis animation timer if one is registered.
 static void cancel_ellipsis_timer(void) {
   if (s_ellipsis_timer) {
     app_timer_cancel(s_ellipsis_timer);
@@ -153,6 +176,9 @@ static void cancel_ellipsis_timer(void) {
   }
 }
 
+// AppTimer callback used by Quick Launch: starts dictation if the app is still in STATE_RECORDING.
+// The small delay allows the window to finish loading before the dictation UI appears.
+// @param context - unused
 static void auto_launch_callback(void *context) {
   if (s_current_state == STATE_RECORDING) {
     dictation_session_start(s_dictation_session);
@@ -161,6 +187,9 @@ static void auto_launch_callback(void *context) {
 
 // ---- State machine ----
 
+// Transitions the app to the given state and updates the UI and timers accordingly.
+// Cancels any running ellipsis animation before switching states.
+// @param state - the target AppState to transition into
 static void set_state(AppState state) {
   s_current_state = state;
   cancel_ellipsis_timer();
@@ -198,6 +227,9 @@ static void set_state(AppState state) {
 
 // ---- AppMessage ----
 
+// Sends the transcribed text to the phone via AppMessage for parsing into tasks.
+// Transitions to STATE_ERROR if the AppMessage outbox is unavailable.
+// @param text - null-terminated transcription string from the dictation session
 static void send_dictation_text(const char *text) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
@@ -212,6 +244,13 @@ static void send_dictation_text(const char *text) {
   APP_LOG(APP_LOG_LEVEL_INFO, "Sent dictation text to phone: %s", text);
 }
 
+// AppMessage inbox callback: handles both settings delivery and task lifecycle messages.
+// Settings keys (TodoistApiKey, TodoistProjectId, AutoLaunch, SkipPreview) are persisted
+// to flash storage whenever received from the Clay config page.
+// Task flow: TASK_PREVIEW opens the confirmation window; RESULT_SUCCESS/RESULT_ERROR
+//            update display and drive the state machine.
+// @param iterator - incoming message dictionary
+// @param context  - unused
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
   APP_LOG(APP_LOG_LEVEL_INFO, "Inbox received");
 
@@ -276,6 +315,10 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   }
 }
 
+// AppMessage outbox failure callback: logs the error code and shows a comm-error screen.
+// @param iterator - the message that failed to send
+// @param reason   - AppMessageResult code indicating why the send failed
+// @param context  - unused
 static void outbox_failed_callback(DictionaryIterator *iterator,
                                     AppMessageResult reason, void *context) {
   APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox failed: %d", (int)reason);
@@ -283,12 +326,22 @@ static void outbox_failed_callback(DictionaryIterator *iterator,
   set_state(STATE_ERROR);
 }
 
+// AppMessage outbox success callback: logs confirmation that the message reached the phone.
+// @param iterator - the message that was sent successfully
+// @param context  - unused
 static void outbox_sent_callback(DictionaryIterator *iterator, void *context) {
   APP_LOG(APP_LOG_LEVEL_INFO, "Message sent to phone successfully");
 }
 
 // ---- Dictation ----
 
+// Dictation session result callback: routes success and failure cases.
+// On success, transitions to STATE_PROCESSING and forwards the transcription to the phone.
+// On failure, shows a user-facing error message and transitions to STATE_ERROR.
+// @param session       - the DictationSession that produced the result
+// @param result        - status code indicating success or type of failure
+// @param transcription - recognized text string (only valid on DictationSessionStatusSuccess)
+// @param context       - unused
 static void dictation_result_handler(DictationSession *session,
                                       DictationSessionStatus result,
                                       char *transcription,
@@ -330,6 +383,8 @@ static void dictation_result_handler(DictationSession *session,
 
 // ---- Confirm tasks ----
 
+// Sends CONFIRM_TASKS to the phone, signaling that the user approved the task preview.
+// The phone will then submit the pending task list to the Todoist API.
 static void send_confirm_tasks(void) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
@@ -344,22 +399,33 @@ static void send_confirm_tasks(void) {
 
 // ---- Preview window ----
 
+// Select button handler for the preview window: marks tasks as confirmed and closes the window.
+// preview_window_unload will detect s_preview_confirmed and send CONFIRM_TASKS to the phone.
+// @param recognizer - unused
+// @param context    - unused
 static void preview_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   s_preview_confirmed = true;
   window_stack_pop(true);
 }
 
+// Click config provider for the preview window: wires Select to preview_select_click_handler.
+// Up/Down are handled by the ScrollLayer to allow scrolling through long task lists.
+// @param context - unused
 static void preview_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, preview_select_click_handler);
 }
 
+// Preview/confirmation window load handler.
+// Parses the pipe-delimited s_preview_text into a numbered task list, then builds the UI:
+// a fixed title bar, a scrollable task list in the middle, and a fixed hint bar at the bottom.
+// @param window - the preview Window being loaded
 static void preview_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
   int margin = PBL_IF_ROUND_ELSE(20, 4);
   int hint_h = PBL_IF_ROUND_ELSE(40, 36);
 
-  // Build numbered task list from pipe-delimited s_preview_text
+  // Parse the pipe-delimited task string into a numbered display list ("1. Task\n2. Task\n...")
   static char display_buf[1100];
   static char temp[1024];
   display_buf[0] = '\0';
@@ -379,6 +445,7 @@ static void preview_window_load(Window *window) {
     if (saved == '\0') break;
     p = end + 1;
   }
+  // Allocate ~40px of height per task plus a small top padding
   int content_h = (task_num - 1) * 40 + 16;
 
   // Title bar
@@ -390,7 +457,7 @@ static void preview_window_load(Window *window) {
   text_layer_set_text(s_preview_title_layer, "Confirm Tasks?");
   layer_add_child(root, text_layer_get_layer(s_preview_title_layer));
 
-  // Hint bar
+  // Hint bar pinned to the bottom of the screen
   int hint_y = bounds.size.h - hint_h;
   s_preview_hint_layer = text_layer_create(
       GRect(margin, hint_y, bounds.size.w - margin * 2, hint_h));
@@ -401,11 +468,11 @@ static void preview_window_load(Window *window) {
   text_layer_set_text(s_preview_hint_layer, "Select: Add  Back: Cancel");
   layer_add_child(root, text_layer_get_layer(s_preview_hint_layer));
 
-  // Scroll layer fills the middle zone
+  // Scroll layer fills the middle zone between title bar and hint bar
   GRect scroll_frame = GRect(0, 28, bounds.size.w, bounds.size.h - 28 - hint_h);
   s_preview_scroll_layer = scroll_layer_create(scroll_frame);
 
-  // Text layer inside scroll
+  // Text layer inside the scroll layer displays the numbered task list
   s_preview_text_layer = text_layer_create(
       GRect(margin, 4, scroll_frame.size.w - margin * 2, content_h));
   text_layer_set_background_color(s_preview_text_layer, GColorClear);
@@ -428,6 +495,10 @@ static void preview_window_load(Window *window) {
   scroll_layer_set_click_config_onto_window(s_preview_scroll_layer, window);
 }
 
+// Preview window unload handler: destroys all layers and the window itself.
+// If the user pressed Select (s_preview_confirmed == true), transitions to STATE_PROCESSING
+// and sends CONFIRM_TASKS to the phone. Otherwise returns to STATE_IDLE.
+// @param window - the preview Window being unloaded
 static void preview_window_unload(Window *window) {
   text_layer_destroy(s_preview_text_layer);
   s_preview_text_layer = NULL;
@@ -449,6 +520,8 @@ static void preview_window_unload(Window *window) {
   }
 }
 
+// Creates and pushes the task preview window onto the navigation stack.
+// No-op if the preview window is already on screen to prevent duplicate pushes.
 static void preview_window_push(void) {
   if (s_preview_window != NULL) return;
   s_preview_window = window_create();
@@ -461,6 +534,12 @@ static void preview_window_push(void) {
 
 // ---- Button handlers ----
 
+// Main window Select button handler: drives state transitions based on current state.
+// Idle:         starts dictation if an API key is configured; otherwise shows STATE_NO_CONFIG.
+// Success/Error: cancels the auto-return timer and either re-enters recording (Quick Launch)
+//               or returns to idle.
+// @param recognizer - unused
+// @param context    - unused
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   switch (s_current_state) {
     case STATE_IDLE:
@@ -492,12 +571,18 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   }
 }
 
+// Click config provider for the main window: subscribes Select to select_click_handler.
+// @param context - unused
 static void click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
 }
 
 // ---- Window lifecycle ----
 
+// Main window load handler: creates and lays out all UI layers.
+// Layer order (back to front): title bar, main text area, divider line, hint bar.
+// After layout, starts recording immediately if Quick Launch is enabled; otherwise shows idle.
+// @param window - the main Window being loaded
 static void window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
@@ -511,7 +596,7 @@ static void window_load(Window *window) {
   text_layer_set_text(s_title_layer, "Todoist Ramble");
   layer_add_child(window_layer, text_layer_get_layer(s_title_layer));
 
-  // Main content area
+  // Main content area — fills the space between the title bar and the hint bar
   int main_y = 36;
   int hint_h = PBL_IF_ROUND_ELSE(40, 44);
   int divider_y = bounds.size.h - hint_h - 1;
@@ -527,12 +612,12 @@ static void window_load(Window *window) {
   text_layer_set_overflow_mode(s_main_layer, GTextOverflowModeWordWrap);
   layer_add_child(window_layer, text_layer_get_layer(s_main_layer));
 
-  // Divider line
+  // Divider line separates the content area from the hint bar
   s_divider_layer = layer_create(GRect(0, divider_y, bounds.size.w, 1));
   layer_set_update_proc(s_divider_layer, divider_update_proc);
   layer_add_child(window_layer, s_divider_layer);
 
-  // Hint bar
+  // Hint bar shows the current action label (e.g. "Select: Start")
   s_hint_layer = text_layer_create(
       GRect(margin, divider_y + 2, bounds.size.w - margin * 2, hint_h - 2));
   text_layer_set_background_color(s_hint_layer, GColorClear);
@@ -550,6 +635,8 @@ static void window_load(Window *window) {
   }
 }
 
+// Main window unload handler: cancels any pending timers and destroys all layers.
+// @param window - the main Window being unloaded
 static void window_unload(Window *window) {
   cancel_state_timer();
   cancel_ellipsis_timer();
@@ -561,6 +648,8 @@ static void window_unload(Window *window) {
 
 // ---- Init / deinit ----
 
+// Initializes the app: loads persisted settings from flash, creates the dictation session,
+// registers AppMessage callbacks, opens the AppMessage channel, and pushes the main window.
 static void init(void) {
   // Load persisted settings
   s_api_key[0] = '\0';
@@ -597,6 +686,7 @@ static void init(void) {
   window_stack_push(s_main_window, true);
 }
 
+// Cleans up app resources: destroys the dictation session and the main window.
 static void deinit(void) {
   if (s_dictation_session) {
     dictation_session_destroy(s_dictation_session);
@@ -605,6 +695,8 @@ static void deinit(void) {
   window_destroy(s_main_window);
 }
 
+// App entry point: runs init, enters the Pebble event loop, then cleans up via deinit.
+// @returns 0 on normal exit (required by the Pebble SDK; the value is ignored at runtime)
 int main(void) {
   init();
   app_event_loop();
