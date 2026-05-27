@@ -140,10 +140,8 @@ static void cancel_ellipsis_timer(void) {
 }
 
 static void auto_launch_callback(void *context) {
-  APP_LOG(APP_LOG_LEVEL_INFO, "DBG auto_launch_callback fired, state=%d", (int)s_current_state);
   if (s_current_state == STATE_RECORDING) {
-    DictationSessionStatus status = dictation_session_start(s_dictation_session);
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG dictation_session_start returned %d", (int)status);
+    dictation_session_start(s_dictation_session);
   }
 }
 
@@ -217,13 +215,8 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
 
   Tuple *auto_launch_t = dict_find(iterator, MESSAGE_KEY_AutoLaunch);
   if (auto_launch_t) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG AutoLaunch tuple type=%d uint8=%d int32=%d",
-            (int)auto_launch_t->type, (int)auto_launch_t->value->uint8, (int)auto_launch_t->value->int32);
     s_auto_launch = auto_launch_t->value->uint8 != 0;
     persist_write_bool(STORAGE_KEY_AUTO_LAUNCH, s_auto_launch);
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG auto_launch saved as %d", (int)s_auto_launch);
-  } else {
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG AutoLaunch key not present in message");
   }
 
   // Task creation result
@@ -384,13 +377,10 @@ static void window_load(Window *window) {
   layer_add_child(window_layer, text_layer_get_layer(s_hint_layer));
 
   // Set initial state — skip idle if quick launch is enabled
-  APP_LOG(APP_LOG_LEVEL_INFO, "DBG window_load: auto_launch=%d api_key_set=%d", (int)s_auto_launch, s_api_key[0] != '\0');
   if (s_auto_launch && s_api_key[0] != '\0') {
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG window_load: scheduling auto-launch timer");
     set_state(STATE_RECORDING);
     app_timer_register(100, auto_launch_callback, NULL);
   } else {
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG window_load: going to STATE_IDLE");
     set_state(STATE_IDLE);
   }
 }
@@ -418,11 +408,7 @@ static void init(void) {
   }
   if (persist_exists(STORAGE_KEY_AUTO_LAUNCH)) {
     s_auto_launch = persist_read_bool(STORAGE_KEY_AUTO_LAUNCH);
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG persist auto_launch exists, value=%d", (int)s_auto_launch);
-  } else {
-    APP_LOG(APP_LOG_LEVEL_INFO, "DBG persist auto_launch key does NOT exist");
   }
-  APP_LOG(APP_LOG_LEVEL_INFO, "DBG api_key present=%d auto_launch=%d", s_api_key[0] != '\0', (int)s_auto_launch);
 
   // Create dictation session — 512 byte buffer for transcription
   s_dictation_session = dictation_session_create(512, dictation_result_handler, NULL);
