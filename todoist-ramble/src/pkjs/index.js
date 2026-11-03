@@ -1,16 +1,24 @@
 var Clay = require('@rebble/clay');
 var clayConfig = require('./config');
-var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+var keywordRules = require('./keyword-rules');
+var clay = new Clay(clayConfig, configPageScript, {
+  autoHandleEvents: false,
+  // Lets the settings page check keyword rules with the same parser the app uses
+  userData: { parseKeywordRules: keywordRules.parseKeywordRules }
+});
+clay.registerComponent(require('./textarea'));
 
 var settings = {
   apiKey: '',
   projectId: '',
-  skipPreview: false
+  skipPreview: false,
+  keywordRules: []
 };
 
 var STORAGE_KEY_API = 'ramble_apiKey';
 var STORAGE_KEY_PROJECT = 'ramble_projectId';
 var STORAGE_KEY_SKIP_PREVIEW = 'ramble_skipPreview';
+var STORAGE_KEY_KEYWORD_RULES = 'ramble_keywordRules';
 
 // Pending task array held between DICTATION_TEXT and CONFIRM_TASKS messages.
 // Set when the phone sends a task preview to the watch; cleared after the user confirms or cancels.
@@ -27,33 +35,53 @@ function loadSettings() {
   settings.apiKey = apiKey;
   settings.projectId = projectId;
   settings.skipPreview = (skipPreview === 'true');
+  settings.keywordRules = loadKeywordRules(localStorage.getItem(STORAGE_KEY_KEYWORD_RULES) || '');
   console.log('Settings loaded. API key set: ' + (settings.apiKey ? 'yes' : 'no') +
               ', project ID: ' + (settings.projectId || 'inbox') +
-              ', skipPreview: ' + settings.skipPreview);
+              ', skipPreview: ' + settings.skipPreview +
+              ', keyword rules: ' + settings.keywordRules.length);
 }
 
 /**
  * Persists new settings to localStorage and updates the in-memory settings object.
- * @param {string}  apiKey      - Todoist API token
- * @param {string}  projectId   - Todoist project ID, or empty string for Inbox
- * @param {boolean} skipPreview - Whether to skip the on-watch task preview step
+ * @param {string}  apiKey           - Todoist API token
+ * @param {string}  projectId        - Todoist project ID, or empty string for Inbox
+ * @param {boolean} skipPreview      - Whether to skip the on-watch task preview step
+ * @param {string}  keywordRulesText - Keyword rules JSON from the settings page, or empty string
  */
-function saveSettings(apiKey, projectId, skipPreview) {
+function saveSettings(apiKey, projectId, skipPreview, keywordRulesText) {
   settings.apiKey = apiKey;
   settings.projectId = projectId;
   settings.skipPreview = !!skipPreview;
+  settings.keywordRules = loadKeywordRules(keywordRulesText);
   localStorage.setItem(STORAGE_KEY_API, apiKey);
   localStorage.setItem(STORAGE_KEY_PROJECT, projectId);
   localStorage.setItem(STORAGE_KEY_SKIP_PREVIEW, settings.skipPreview ? 'true' : 'false');
+  localStorage.setItem(STORAGE_KEY_KEYWORD_RULES, keywordRulesText);
 }
 
 /**
- * Splits a dictated sentence into individual task strings.
+ * Parses saved keyword rules, ignoring them (with a log message) if they're invalid.
+ * The settings page shows the same error while the rules are being edited.
+ * @param  {string}   text - keyword rules JSON as entered on the settings page
+ * @returns {Object[]}      parsed rules; empty if the text is empty or invalid
+ */
+function loadKeywordRules(text) {
+  var parsed = keywordRules.parseKeywordRules(text);
+  if (parsed.error) {
+    console.log('Ignoring invalid keyword rules: ' + parsed.error);
+  }
+  return parsed.rules;
+}
+
+/**
+ * Splits a dictated sentence into individual tasks.
  * Splits on spoken delimiters (and/also/then/next, commas, periods, numbered lists),
- * strips leading stop-words from each part, discards fragments shorter than 3 characters,
- * and capitalizes each resulting task.
+ * strips leading stop-words from each part, applies the keyword rules, discards fragments
+ * shorter than 3 characters, and capitalizes each resulting task.
  * @param  {string}   text - raw transcription string received from the watch
- * @returns {string[]}      array of cleaned, capitalized task strings (may be empty)
+ * @returns {Object[]}      array of {content, section, labels} tasks (may be empty), where
+ *                          section and labels come from matched keyword rules
  */
 function splitIntoTasks(text) {
   if (!text || typeof text !== 'string') return [];
@@ -69,28 +97,165 @@ function splitIntoTasks(text) {
   var tasks = [];
 
   for (var i = 0; i < parts.length; i++) {
-    var task = parts[i].trim().replace(/^(and|also|then|next|but|or|so)\s+/i, '');
-    if (!task) continue;
-    if (task.length < 3) continue;
-    if (stopWords.indexOf(task.toLowerCase()) !== -1) continue;
+    var part = parts[i].trim().replace(/^(and|also|then|next|but|or|so)\s+/i, '');
+    // Apply keyword rules before filtering, since removing a keyword shortens the task
+    var task = keywordRules.applyKeywordRules(part, settings.keywordRules);
+    var content = task.content;
+    if (!content) continue;
+    if (content.length < 3) continue;
+    if (stopWords.indexOf(content.toLowerCase()) !== -1) continue;
     // Capitalize first letter
-    tasks.push(task.charAt(0).toUpperCase() + task.slice(1));
+    task.content = content.charAt(0).toUpperCase() + content.slice(1);
+    tasks.push(task);
   }
 
   return tasks;
 }
 
 /**
+ * Formats a task for the watch preview, showing its section and labels in Todoist's syntax.
+ * @param  {Object} task - task from splitIntoTasks
+ * @returns {string}       e.g. "Coffee creamer /Costco @Urgent"
+ */
+function formatTask(task) {
+  var text = task.content;
+  if (task.section) {
+    text += ' /' + task.section;
+  }
+  task.labels.forEach(function(label) {
+    text += ' @' + label;
+  });
+  return text;
+}
+
+/**
+ * Fetches the sections tasks can be filed into: the configured project's sections, or every
+ * project's sections when tasks go to the Inbox. Follows pagination cursors until done.
+ * @param {Function} callback - called with an array of section objects ({id, name, project_id, ...});
+ *                              if a request fails, called with whatever loaded before the failure
+ */
+function fetchSections(callback) {
+  var sections = [];
+
+  function fetchPage(cursor) {
+    var params = [];
+    if (settings.projectId) {
+      params.push('project_id=' + encodeURIComponent(settings.projectId));
+    }
+    if (cursor) {
+      params.push('cursor=' + encodeURIComponent(cursor));
+    }
+
+    var xhr = new XMLHttpRequest();
+    xhr.onload = function() {
+      var page = null;
+      if (this.status === 200) {
+        try {
+          page = JSON.parse(this.responseText);
+        } catch (e) {
+          page = null;
+        }
+      }
+      if (!page || !Array.isArray(page.results)) {
+        console.log('Could not load sections: HTTP ' + this.status);
+        callback(sections);
+        return;
+      }
+      sections = sections.concat(page.results);
+      if (page.next_cursor) {
+        fetchPage(page.next_cursor);
+      } else {
+        callback(sections);
+      }
+    };
+    xhr.onerror = function() {
+      console.log('Could not load sections: network error');
+      callback(sections);
+    };
+
+    xhr.open('GET', 'https://api.todoist.com/api/v1/sections' +
+                    (params.length ? '?' + params.join('&') : ''));
+    xhr.setRequestHeader('Authorization', 'Bearer ' + settings.apiKey);
+    xhr.send();
+  }
+
+  fetchPage(null);
+}
+
+/**
+ * Normalizes a section name for matching: case, spacing and apostrophe style don't matter.
+ * @param  {string} name - section name from a keyword rule or from Todoist
+ * @returns {string}       normalized name
+ */
+function sectionKey(name) {
+  return String(name).trim().replace(/\s+/g, ' ').replace(/’/g, '\'').toLowerCase();
+}
+
+/**
+ * Turns each task's section name into a section ID, plus the project that section is in.
+ * A section that can't be found is left in the task title ("Coffee creamer /Costco") so the
+ * task still gets added and the missing section is easy to spot in Todoist.
+ * @param {Object[]} tasks    - tasks from splitIntoTasks; updated in place
+ * @param {Object[]} sections - sections from fetchSections
+ */
+function resolveSections(tasks, sections) {
+  var byName = Object.create(null);
+  sections.forEach(function(section) {
+    var key = sectionKey(section.name);
+    if (!section.is_archived && !section.is_deleted && !(key in byName)) {
+      byName[key] = section;
+    }
+  });
+
+  tasks.forEach(function(task) {
+    if (!task.section) return;
+    var section = byName[sectionKey(task.section)];
+    if (section) {
+      task.sectionId = section.id;
+      task.projectId = section.project_id;
+    } else {
+      console.log('No section named "' + task.section + '"; leaving it in the task title');
+      task.content += ' /' + task.section;
+    }
+  });
+}
+
+/**
+ * Adds tasks to Todoist, first looking up section IDs if any task names a section.
+ * @param {Object[]} tasks    - tasks from splitIntoTasks
+ * @param {Function} callback - called with (successCount, errorString|null) when done
+ */
+function submitTasks(tasks, callback) {
+  var needsSections = tasks.some(function(task) { return !!task.section; });
+  if (!needsSections) {
+    createTasksSequentially(tasks, 0, 0, callback);
+    return;
+  }
+  fetchSections(function(sections) {
+    resolveSections(tasks, sections);
+    createTasksSequentially(tasks, 0, 0, callback);
+  });
+}
+
+/**
  * Creates a single task in Todoist via the REST API.
- * Uses the configured API key; adds to the configured project if set, otherwise Inbox.
- * @param {string}   content  - task title to create
+ * Uses the configured API key; adds to the task's section if it has one, otherwise to the
+ * configured project if set, otherwise Inbox.
+ * @param {Object}   task     - task from splitIntoTasks, with any section resolved by resolveSections
  * @param {Function} callback - called with (httpStatus, responseText) when the request settles
  */
-function createTask(content, callback) {
+function createTask(task, callback) {
   var xhr = new XMLHttpRequest();
-  var body = { content: content };
-  if (settings.projectId) {
-    body.project_id = settings.projectId;
+  var body = { content: task.content };
+  var projectId = task.projectId || settings.projectId;
+  if (projectId) {
+    body.project_id = projectId;
+  }
+  if (task.sectionId) {
+    body.section_id = task.sectionId;
+  }
+  if (task.labels.length > 0) {
+    body.labels = task.labels;
   }
 
   xhr.onload = function() {
@@ -110,7 +275,7 @@ function createTask(content, callback) {
  * Recursively creates tasks one at a time to avoid hitting API rate limits.
  * Stops immediately on 401/403 auth errors rather than continuing with remaining tasks.
  * On completion (all tasks attempted or early stop), calls callback with final counts.
- * @param {string[]} tasks        - full list of task strings to create
+ * @param {Object[]} tasks        - full list of tasks to create (see createTask)
  * @param {number}   index        - current position in the tasks array (start at 0)
  * @param {number}   successCount - running count of successfully created tasks
  * @param {Function} callback     - called with (successCount, errorString|null) when done
@@ -148,6 +313,49 @@ function sendToWatch(payload, label) {
   );
 }
 
+/**
+ * Runs inside the Clay settings page, not in PebbleKit JS: Clay serializes this function into
+ * the page, so it can only use what the page provides (the ClayConfig as `this`, and the rules
+ * parser passed in through userData). Lists how each keyword rule will be applied, or what's
+ * wrong with the rules, under the rules box, updating as the user types.
+ */
+function configPageScript() {
+  var clayConfig = this;
+  clayConfig.on(clayConfig.EVENTS.AFTER_BUILD, function() {
+    var rulesItem = clayConfig.getItemByMessageKey('KeywordRules');
+    var statusItem = clayConfig.getItemById('KeywordRulesStatus');
+    var parseKeywordRules = clayConfig.meta.userData.parseKeywordRules;
+    if (!rulesItem || !statusItem || typeof parseKeywordRules !== 'function') return;
+
+    function escapeHtml(text) {
+      return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function describeRule(rule) {
+      var effects = [];
+      if (rule.text) effects.push('"' + escapeHtml(rule.text) + '"');
+      if (rule.section) effects.push('section <b>' + escapeHtml(rule.section) + '</b>');
+      rule.labels.forEach(function(label) {
+        effects.push('label <b>' + escapeHtml(label) + '</b>');
+      });
+      if (effects.length === 0) effects.push('removed');
+      return escapeHtml(rule.keywords.join(', ')) + ' &rarr; ' + effects.join(', ');
+    }
+
+    function showStatus() {
+      var result = parseKeywordRules(rulesItem.get());
+      if (result.error) {
+        statusItem.set('<span style="color:#ff4700">&#9888; ' + escapeHtml(result.error) + '</span>');
+      } else {
+        statusItem.set(result.rules.map(describeRule).join('<br>'));
+      }
+    }
+
+    rulesItem.on('input', showStatus);
+    showStatus();
+  });
+}
+
 // Opens the Clay configuration page in the Pebble mobile app when the user taps Settings.
 Pebble.addEventListener('showConfiguration', function() {
   Pebble.openURL(clay.generateUrl());
@@ -166,7 +374,8 @@ Pebble.addEventListener('webviewclosed', function(e) {
     var projectId = (claySettings.TodoistProjectId && claySettings.TodoistProjectId.value) ? String(claySettings.TodoistProjectId.value) : '';
     var autoLaunch = (claySettings.AutoLaunch && claySettings.AutoLaunch.value) ? 1 : 0;
     var skipPreview = !!(claySettings.SkipPreview && claySettings.SkipPreview.value);
-    saveSettings(apiKey, projectId, skipPreview);
+    var keywordRulesText = (claySettings.KeywordRules && claySettings.KeywordRules.value) ? String(claySettings.KeywordRules.value) : '';
+    saveSettings(apiKey, projectId, skipPreview, keywordRulesText);
     // autoHandleEvents:false means Clay never sends to the watch — do it manually
     Pebble.sendAppMessage({
       'TodoistApiKey': apiKey,
@@ -216,7 +425,7 @@ Pebble.addEventListener('appmessage', function(e) {
 
     if (settings.skipPreview) {
       // Skip preview — add tasks immediately
-      createTasksSequentially(tasks, 0, 0, function(count, err) {
+      submitTasks(tasks, function(count, err) {
         if (err && count === 0) {
           sendToWatch({'RESULT_ERROR': err}, 'todoist error');
         } else {
@@ -226,7 +435,7 @@ Pebble.addEventListener('appmessage', function(e) {
     } else {
       // Send task list to watch for preview/confirmation before creating
       s_pending_tasks = tasks;
-      sendToWatch({'TASK_PREVIEW': tasks.join('|')}, 'task preview');
+      sendToWatch({'TASK_PREVIEW': tasks.map(formatTask).join('|')}, 'task preview');
     }
   }
 
@@ -239,7 +448,7 @@ Pebble.addEventListener('appmessage', function(e) {
       sendToWatch({'RESULT_ERROR': 'No pending tasks'}, 'confirm with no tasks');
       return;
     }
-    createTasksSequentially(tasks, 0, 0, function(count, err) {
+    submitTasks(tasks, function(count, err) {
       if (err && count === 0) {
         sendToWatch({'RESULT_ERROR': err}, 'todoist error');
       } else {
