@@ -445,8 +445,6 @@ static void preview_window_load(Window *window) {
     if (saved == '\0') break;
     p = end + 1;
   }
-  // Allocate ~40px of height per task plus a small top padding
-  int content_h = (task_num - 1) * 40 + 16;
 
   // Title bar
   s_preview_title_layer = text_layer_create(GRect(0, 0, bounds.size.w, 28));
@@ -472,15 +470,20 @@ static void preview_window_load(Window *window) {
   GRect scroll_frame = GRect(0, 28, bounds.size.w, bounds.size.h - 28 - hint_h);
   s_preview_scroll_layer = scroll_layer_create(scroll_frame);
 
-  // Text layer inside the scroll layer displays the numbered task list
-  s_preview_text_layer = text_layer_create(
-      GRect(margin, 4, scroll_frame.size.w - margin * 2, content_h));
+  // Text layer inside the scroll layer displays the numbered task list. It starts tall enough
+  // for any list, then shrinks to the measured text height so tasks that wrap onto several
+  // lines (e.g. with a /Section and @Label appended) aren't clipped.
+  int text_w = scroll_frame.size.w - margin * 2;
+  s_preview_text_layer = text_layer_create(GRect(margin, 4, text_w, 4000));
   text_layer_set_background_color(s_preview_text_layer, GColorClear);
   text_layer_set_text_color(s_preview_text_layer, GColorBlack);
   text_layer_set_font(s_preview_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_preview_text_layer, GTextAlignmentLeft);
   text_layer_set_overflow_mode(s_preview_text_layer, GTextOverflowModeWordWrap);
   text_layer_set_text(s_preview_text_layer, display_buf);
+  int content_h = text_layer_get_content_size(s_preview_text_layer).h + 8;
+  layer_set_frame(text_layer_get_layer(s_preview_text_layer),
+      GRect(margin, 4, text_w, content_h));
 
   scroll_layer_set_content_size(s_preview_scroll_layer,
       GSize(scroll_frame.size.w, content_h + 8));
