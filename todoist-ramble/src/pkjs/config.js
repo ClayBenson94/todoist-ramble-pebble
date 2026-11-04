@@ -70,27 +70,13 @@ module.exports = [
       },
       {
         "type": "text",
-        "defaultValue": "Say a keyword with a task to swap it for its replacement: <b>/Name</b> files the task in that section, <b>@Name</b> adds that label. Keywords match whole words, in any case."
+        "defaultValue": "Say a keyword with a task to swap it for its replacement: <b>/Name</b> files the task in that section, <b>@Name</b> adds that label. Separate keywords with commas; they match whole words, in any case."
       },
       {
-        // Stays on the phone: index.js reads it on save and never sends it to the watch
-        "type": "textarea",
+        // Rows of keywords and replacements, saved as JSON (see keyword-rules-editor.js).
+        // Stays on the phone: index.js reads it on save and never sends it to the watch.
+        "type": "keyword-rules",
         "messageKey": "KeywordRules",
-        "label": "Keyword rules (JSON)",
-        "defaultValue": "",
-        "attributes": {
-          "placeholder": "[\n  {\"keywords\": [\"costco\", \"bulk\"], \"replace\": \"/Costco\"},\n  {\"keywords\": [\"urgent\"], \"replace\": \"@Urgent\"}\n]",
-          "rows": "8",
-          "autocapitalize": "off",
-          "autocorrect": "off",
-          "autocomplete": "off",
-          "spellcheck": "false"
-        }
-      },
-      {
-        // Filled in by the settings page script in index.js as the rules are edited
-        "type": "text",
-        "id": "KeywordRulesStatus",
         "defaultValue": ""
       }
     ]

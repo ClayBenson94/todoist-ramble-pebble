@@ -1,12 +1,12 @@
 var Clay = require('@rebble/clay');
 var clayConfig = require('./config');
 var keywordRules = require('./keyword-rules');
-var clay = new Clay(clayConfig, configPageScript, {
+var clay = new Clay(clayConfig, null, {
   autoHandleEvents: false,
-  // Lets the settings page check keyword rules with the same parser the app uses
+  // Lets the keyword rules editor check each rule with the same parser the app uses
   userData: { parseKeywordRules: keywordRules.parseKeywordRules }
 });
-clay.registerComponent(require('./textarea'));
+clay.registerComponent(require('./keyword-rules-editor'));
 
 var settings = {
   apiKey: '',
@@ -61,15 +61,15 @@ function saveSettings(apiKey, projectId, skipPreview, keywordRulesText) {
 }
 
 /**
- * Parses saved keyword rules, ignoring them (with a log message) if they're invalid.
- * The settings page shows the same error while the rules are being edited.
- * @param  {string}   text - keyword rules JSON as entered on the settings page
- * @returns {Object[]}      parsed rules; empty if the text is empty or invalid
+ * Parses saved keyword rules, skipping (with a log message) any that are invalid.
+ * The settings page flags the same problems under each rule as it's edited.
+ * @param  {string}   text - keyword rules JSON saved by the settings page
+ * @returns {Object[]}      the valid rules; empty if there are none
  */
 function loadKeywordRules(text) {
   var parsed = keywordRules.parseKeywordRules(text);
   if (parsed.error) {
-    console.log('Ignoring invalid keyword rules: ' + parsed.error);
+    console.log('Skipping invalid keyword rules: ' + parsed.error);
   }
   return parsed.rules;
 }
@@ -188,7 +188,7 @@ function fetchSections(callback) {
  * @returns {string}       normalized name
  */
 function sectionKey(name) {
-  return String(name).trim().replace(/\s+/g, ' ').replace(/’/g, '\'').toLowerCase();
+  return String(name).trim().replace(/\s+/g, ' ').replace(/\u2019/g, '\'').toLowerCase();
 }
 
 /**
@@ -311,49 +311,6 @@ function sendToWatch(payload, label) {
     function() { console.log('Sent to watch: ' + label); },
     function() { console.log('Failed to send to watch: ' + label); }
   );
-}
-
-/**
- * Runs inside the Clay settings page, not in PebbleKit JS: Clay serializes this function into
- * the page, so it can only use what the page provides (the ClayConfig as `this`, and the rules
- * parser passed in through userData). Lists how each keyword rule will be applied, or what's
- * wrong with the rules, under the rules box, updating as the user types.
- */
-function configPageScript() {
-  var clayConfig = this;
-  clayConfig.on(clayConfig.EVENTS.AFTER_BUILD, function() {
-    var rulesItem = clayConfig.getItemByMessageKey('KeywordRules');
-    var statusItem = clayConfig.getItemById('KeywordRulesStatus');
-    var parseKeywordRules = clayConfig.meta.userData.parseKeywordRules;
-    if (!rulesItem || !statusItem || typeof parseKeywordRules !== 'function') return;
-
-    function escapeHtml(text) {
-      return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function describeRule(rule) {
-      var effects = [];
-      if (rule.text) effects.push('"' + escapeHtml(rule.text) + '"');
-      if (rule.section) effects.push('section <b>' + escapeHtml(rule.section) + '</b>');
-      rule.labels.forEach(function(label) {
-        effects.push('label <b>' + escapeHtml(label) + '</b>');
-      });
-      if (effects.length === 0) effects.push('removed');
-      return escapeHtml(rule.keywords.join(', ')) + ' &rarr; ' + effects.join(', ');
-    }
-
-    function showStatus() {
-      var result = parseKeywordRules(rulesItem.get());
-      if (result.error) {
-        statusItem.set('<span style="color:#ff4700">&#9888; ' + escapeHtml(result.error) + '</span>');
-      } else {
-        statusItem.set(result.rules.map(describeRule).join('<br>'));
-      }
-    }
-
-    rulesItem.on('input', showStatus);
-    showStatus();
-  });
 }
 
 // Opens the Clay configuration page in the Pebble mobile app when the user taps Settings.

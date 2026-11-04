@@ -1,6 +1,7 @@
 // Keyword rules: swap spoken keywords for Todoist sections, labels, or other text.
 //
-// Rules are entered on the settings page as a JSON list, for example:
+// Rules are edited on the settings page as a list of rows (see keyword-rules-editor.js) and
+// saved as a JSON list, for example:
 //   [
 //     { "keywords": ["costco", "bulk"], "replace": "/Costco" },
 //     { "keywords": ["today", "urgent"], "replace": "@Urgent" }
@@ -10,26 +11,75 @@
 // adds label Name; any other text is put into the task title as-is.
 
 /**
- * Parses and validates the keyword rules JSON entered on the settings page.
- * Forgives trailing commas and curly double quotes, which phone keyboards like to insert.
+ * Parses and validates the keyword rules JSON saved by the settings page.
+ * Forgives trailing commas and curly double quotes, in case the JSON was typed by hand.
  *
- * Clay also serializes this function into the settings page (via userData) to check the
- * rules as they're typed, so it must stay self-contained: ES5 only, and no references to
- * anything defined outside its own body.
+ * Clay also serializes this function into the settings page (via userData) so the rules
+ * editor can check each rule as it's typed, so it must stay self-contained: ES5 only, and
+ * no references to anything defined outside its own body.
  *
- * @param  {string} text - raw rules text from the settings page; empty means no rules
- * @returns {{rules: Object[], error: (string|null)}} the parsed rules, or an empty list plus a
- *          message describing the first problem found. Each rule is
- *          {keywords: string[], text: string, section: string, labels: string[]}, where the
- *          keywords are lowercased and the replacement is split into its plain text, section
- *          name and label names.
+ * @param  {string} text - rules JSON from the settings page; empty means no rules
+ * @returns {{rules: Object[], error: (string|null)}} the valid rules, plus a message describing
+ *          the first problem found (or null). A rule with a problem is skipped without
+ *          affecting the others, while text that isn't a JSON list gives no rules at all. Each
+ *          rule is {keywords: string[], text: string, section: string, labels: string[]}, where
+ *          the keywords are lowercased and the replacement is split into its plain text,
+ *          section name and label names.
  */
 function parseKeywordRules(text) {
+  // Parses one {"keywords": [...], "replace": "..."} entry, returning the rule, or a string
+  // describing what's wrong with it
+  function parseRule(entry) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return 'expected { "keywords": [...], "replace": "..." }';
+    }
+
+    var rule = { keywords: [], text: '', section: '', labels: [] };
+
+    var keywords = typeof entry.keywords === 'string' ? [entry.keywords] : entry.keywords;
+    if (!Array.isArray(keywords)) {
+      return '"keywords" must be a list, like ["costco", "bulk"]';
+    }
+    for (var k = 0; k < keywords.length; k++) {
+      if (typeof keywords[k] !== 'string') {
+        return 'each keyword must be text in quotes';
+      }
+      var keyword = keywords[k].trim().replace(/\s+/g, ' ').toLowerCase();
+      if (keyword) rule.keywords.push(keyword);
+    }
+    if (rule.keywords.length === 0) {
+      return 'needs at least one keyword';
+    }
+
+    if (typeof entry.replace !== 'string') {
+      return '"replace" must be text, like "/Costco" or "@Urgent"';
+    }
+    // Split before each "/" or "@" that starts a word, so names can contain spaces:
+    // "/Home Depot @Errand" -> section "Home Depot", label "Errand"
+    var parts = entry.replace.trim().split(/\s+(?=[\/@])/);
+    for (var p = 0; p < parts.length; p++) {
+      var marker = parts[p].charAt(0);
+      var name = parts[p].slice(1).trim();
+      if (marker !== '/' && marker !== '@') {
+        rule.text = parts[p];
+      } else if (!name) {
+        return 'add a name after "' + marker + '"';
+      } else if (marker === '@') {
+        rule.labels.push(name);
+      } else if (rule.section) {
+        return 'a task can only go in one section';
+      } else {
+        rule.section = name;
+      }
+    }
+    return rule;
+  }
+
   var source = String(text || '').trim();
   if (!source) return { rules: [], error: null };
 
   // Straighten smart quotes and drop trailing commas so near-JSON still parses
-  source = source.replace(/[“”„‟]/g, '"').replace(/,\s*([\]}])/g, '$1');
+  source = source.replace(/[\u201C\u201D\u201E\u201F]/g, '"').replace(/,\s*([\]}])/g, '$1');
 
   var data;
   try {
@@ -42,56 +92,17 @@ function parseKeywordRules(text) {
   }
 
   var rules = [];
+  var error = null;
   for (var i = 0; i < data.length; i++) {
-    var entry = data[i];
-    var where = 'Rule ' + (i + 1) + ': ';
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      return { rules: [], error: where + 'expected { "keywords": [...], "replace": "..." }' };
+    var rule = parseRule(data[i]);
+    if (typeof rule === 'string') {
+      error = error || 'Rule ' + (i + 1) + ': ' + rule;
+    } else {
+      rules.push(rule);
     }
-
-    var rule = { keywords: [], text: '', section: '', labels: [] };
-
-    var keywords = typeof entry.keywords === 'string' ? [entry.keywords] : entry.keywords;
-    if (!Array.isArray(keywords)) {
-      return { rules: [], error: where + '"keywords" must be a list, like ["costco", "bulk"]' };
-    }
-    for (var k = 0; k < keywords.length; k++) {
-      if (typeof keywords[k] !== 'string') {
-        return { rules: [], error: where + 'each keyword must be text in quotes' };
-      }
-      var keyword = keywords[k].trim().replace(/\s+/g, ' ').toLowerCase();
-      if (keyword) rule.keywords.push(keyword);
-    }
-    if (rule.keywords.length === 0) {
-      return { rules: [], error: where + 'needs at least one keyword' };
-    }
-
-    if (typeof entry.replace !== 'string') {
-      return { rules: [], error: where + '"replace" must be text, like "/Costco" or "@Urgent"' };
-    }
-    // Split before each "/" or "@" that starts a word, so names can contain spaces:
-    // "/Home Depot @Errand" -> section "Home Depot", label "Errand"
-    var parts = entry.replace.trim().split(/\s+(?=[\/@])/);
-    for (var p = 0; p < parts.length; p++) {
-      var marker = parts[p].charAt(0);
-      var name = parts[p].slice(1).trim();
-      if (marker !== '/' && marker !== '@') {
-        rule.text = parts[p];
-      } else if (!name) {
-        return { rules: [], error: where + 'add a name after "' + marker + '"' };
-      } else if (marker === '@') {
-        rule.labels.push(name);
-      } else if (rule.section) {
-        return { rules: [], error: where + 'a task can only go in one section' };
-      } else {
-        rule.section = name;
-      }
-    }
-
-    rules.push(rule);
   }
 
-  return { rules: rules, error: null };
+  return { rules: rules, error: error };
 }
 
 /**
@@ -127,7 +138,7 @@ function applyKeywordRules(text, rules) {
     return keyword
       .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       .replace(/ /g, '\\s+')
-      .replace(/'/g, '[\'’]');
+      .replace(/'/g, '[\'\u2019]');
   });
   var pattern = new RegExp(
     '(^|[^a-z0-9_])(' + alternatives.join('|') + ')(?![a-z0-9_])', 'gi');
@@ -156,7 +167,7 @@ function applyKeywordRules(text, rules) {
  * @returns {string}          lowercased, single-spaced, with curly apostrophes straightened
  */
 function normalizeKeyword(keyword) {
-  return keyword.toLowerCase().replace(/\s+/g, ' ').replace(/’/g, '\'');
+  return keyword.toLowerCase().replace(/\s+/g, ' ').replace(/\u2019/g, '\'');
 }
 
 module.exports = {

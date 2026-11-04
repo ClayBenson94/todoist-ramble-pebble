@@ -32,15 +32,13 @@ Todoist Ramble splits your speech into individual tasks on natural spoken bounda
 
 ## Keyword shortcuts
 
-Todoist's `/Section` and `@label` syntax is hard to say out loud, so you can map spoken keywords to it instead. Enter the rules as JSON under **Keyword Shortcuts** in the settings:
+Todoist's `/Section` and `@label` syntax is hard to say out loud, so you can map spoken keywords to it instead. Under **Keyword Shortcuts** in the settings, add a row per rule: the keywords to listen for, separated by commas, and what to replace them with.
 
-```json
-[
-  { "keywords": ["costco", "bulk"], "replace": "/Costco" },
-  { "keywords": ["lowes", "at lowes", "from lowes"], "replace": "/Lowes" },
-  { "keywords": ["today", "tomorrow", "urgent"], "replace": "@Urgent" }
-]
-```
+| Keywords | Replace with |
+|---|---|
+| costco, bulk | /Costco |
+| lowes, at lowes, from lowes | /Lowes |
+| today, tomorrow, urgent | @Urgent |
 
 With these rules, saying *"coffee creamer costco and clear bins from Lowes, then call mom tomorrow"* creates:
 
@@ -54,10 +52,12 @@ How the rules work:
 
 - **Matching.** Keywords match whole words or phrases, ignoring case, and apply to the task they're spoken in. When keywords overlap, the longest one wins, so `"at lowes"` takes the *at* along with it while `"lowes"` alone leaves it behind ("Clear bins at").
 - **`/Name`** puts the task in that section of your project. Names can contain spaces (`"/Home Depot"`), and case doesn't matter when matching your sections. With no Project ID set, sections from any project are searched and the task moves to that section's project. If no section matches, the task is still added with `/Name` left in its title so it's easy to spot.
-- **`@Name`** adds that label. One replacement can set a section and labels together, like `"/Costco @Bulk"`.
-- **Anything else** is plain find-and-replace text in the task title. An empty `"replace": ""` deletes the keyword, which is handy for filler words.
+- **`@Name`** adds that label. One replacement can set a section and labels together, like `/Costco @Bulk`.
+- **Anything else** is plain find-and-replace text in the task title. Leaving the replacement empty deletes the keyword, which is handy for filler words.
 - **Preview.** The confirmation screen shows the result in Todoist syntax ("Coffee creamer /Costco") before anything is sent.
-- **Validation.** The settings page checks the rules as you type and lists how each one will be applied. Trailing commas and curly quotes are accepted.
+- **Checking.** Under each row, the settings page shows how the rule will be applied, or what's wrong with it. A rule with a problem is saved but skipped until it's fixed; the others keep working.
+
+The rules are saved as JSON, `[{"keywords": ["costco", "bulk"], "replace": "/Costco"}, ...]`, which is what the app reads.
 
 Because *and*, *also*, *then*, and *next* split tasks apart, a keyword containing one of those words (like "Barnes and Noble") will never match. Use a shorter keyword such as "barnes" instead.
 
